@@ -1,0 +1,6 @@
+# Force Nixpacks to NOT use Dockerfile
+[phases.build]
+cmds = ["pip install -r requirements.txt"]
+
+[start]
+cmd = "python start.py"
