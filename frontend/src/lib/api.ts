@@ -137,8 +137,8 @@ export async function getFillers(): Promise<FillerPhrase[]> {
     return fetchApi("/admin/fillers");
 }
 
-export async function saveFiller(filler: Omit<FillerPhrase, "id">) {
-    return fetchApi("/admin/fillers", {
+export async function saveFiller(filler: Omit<FillerPhrase, "id">): Promise<FillerPhrase> {
+    return fetchApi<FillerPhrase>("/admin/fillers", {
         method: "POST",
         body: JSON.stringify(filler),
     });
