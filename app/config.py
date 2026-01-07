@@ -71,6 +71,10 @@ class Settings(BaseSettings):
     telnyx_connection_id: str = Field(default="", description="Telnyx connection ID")
     telnyx_phone_number: str = Field(default="", description="Telnyx phone number")
     telnyx_webhook_url: str = Field(default="", description="Telnyx webhook URL")
+    webhook_base_url: str = Field(
+        default="",
+        description="Base URL for webhooks (e.g., https://your-app.railway.app)"
+    )
     
     # ===========================================
     # ElevenLabs Configuration
