@@ -29,7 +29,7 @@ orjson==3.10.0
 # Audio Processing
 numpy>=1.24.0
 scipy>=1.11.0
-audioop-lts>=0.2.0
+# audioop-lts is only needed for Python 3.13+, Python 3.11 has built-in audioop
 
 # Database
 sqlalchemy[asyncio]>=2.0.0
