@@ -16,11 +16,14 @@ import {
     X,
     Moon,
     Sun,
+    CalendarDays,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const navItems = [
     { href: "/admin", icon: LayoutDashboard, label: "Dashboard" },
+    { href: "/admin/appointments", icon: CalendarDays, label: "Appointments" },
+    { href: "/admin/calendar", icon: CalendarDays, label: "Calendar" },
     { href: "/admin/prompt", icon: FileText, label: "System Prompt" },
     { href: "/admin/fillers", icon: MessageSquare, label: "Filler Phrases" },
     { href: "/admin/voices", icon: Mic, label: "Voice Settings" },

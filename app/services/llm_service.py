@@ -3,14 +3,40 @@ Nexus Miracle - LLM Service
 
 Google Gemini 3 Flash integration for conversational AI.
 Optimized for low-latency medical assistant responses.
+Target: <200ms TTFT (Time to First Token).
 """
 
-from typing import Any, AsyncGenerator
+import asyncio
+import json
+import re
+import time
+from dataclasses import dataclass, field
+from typing import Any, AsyncGenerator, Literal
 
 from loguru import logger
+from pydantic import BaseModel
 
 from app.config import get_settings
 from app.exceptions import ContextLimitExceeded, GenerationError, LLMException
+
+
+class ResponseSegment(BaseModel):
+    """Single segment of LLM response."""
+    
+    speaker: Literal["sara", "nexus"] = "sara"
+    text: str
+    emotion: str = "neutral"
+    action: str = "none"
+
+
+@dataclass
+class ConversationContext:
+    """Context for LLM conversation."""
+    
+    doctors: list[dict] = field(default_factory=list)
+    appointments: list[dict] = field(default_factory=list)
+    insurance: list[dict] = field(default_factory=list)
+    current_patient: dict | None = None
 
 
 class LLMService:
@@ -19,31 +45,50 @@ class LLMService:
     
     Handles conversation management and response generation
     for the medical contact center AI assistant.
+    
+    Features:
+    - Dual persona support (Sara and Nexus)
+    - Streaming response generation
+    - JSON array output parsing
+    - Database context integration
+    
+    Target: <200ms Time to First Token.
     """
     
-    # System prompt for the medical assistant
-    DEFAULT_SYSTEM_PROMPT = """You are a professional medical assistant at Nexus Miracle, 
-a healthcare center in Saudi Arabia. Your role is to:
+    DEFAULT_SYSTEM_PROMPT = """أنتِ سارة، موظفة استقبال ذكية في عيادة نِكسوس مراكل الطبية في السعودية.
 
-1. Help patients book, reschedule, or cancel appointments
-2. Answer general questions about services and departments
-3. Provide clinic information (hours, locations)
-4. Triage inquiries and direct to appropriate departments
+دورك:
+- الترحيب بالمرضى ومساعدتهم في حجز المواعيد
+- الإجابة على استفساراتهم حول الأطباء والتخصصات
+- التحقق من تغطية التأمين الصحي
+- تقديم معلومات عن العيادة
 
-Guidelines:
-- Be professional, empathetic, and concise
-- Respond in the same language the patient uses (Arabic or English)
-- Never provide medical diagnoses or treatment advice
-- For emergencies, always direct to emergency services (997 in KSA)
-- Confirm patient information when booking appointments
-- Keep responses brief for voice delivery (2-3 sentences max)"""
+شخصيتك:
+- ودودة ومهنية
+- تتحدثين بالعربية السعودية
+- تستخدمين عبارات مثل "إن شاء الله" و"ما شاء الله"
+- صبورة ومتفهمة
+
+عند الحاجة لمعلومات تقنية أو طبية متخصصة، قومي بتحويل المكالمة لنكسوس (المساعد الطبي).
+
+يجب أن ترديّ بتنسيق JSON array كالتالي:
+[
+  {"speaker": "sara", "text": "النص هنا", "emotion": "happy", "action": "none"}
+]
+
+المشاعر المتاحة: neutral, happy, empathetic, concerned, professional
+الإجراءات المتاحة: none, transfer_nexus, book_appointment, check_insurance, end_call"""
     
     def __init__(self) -> None:
         """Initialize the LLM service."""
         self._settings = get_settings()
-        self._client: Any = None
         self._model: Any = None
         self._is_initialized = False
+        
+        # Statistics
+        self._total_generations = 0
+        self._total_ttft_ms = 0.0
+        self._total_completion_ms = 0.0
         
         logger.info("LLMService created")
     
@@ -58,13 +103,35 @@ Guidelines:
             return
         
         try:
-            # TODO: Initialize Gemini client
-            # import google.generativeai as genai
-            # genai.configure(api_key=self._settings.google_api_key)
-            # self._model = genai.GenerativeModel(self._settings.gemini_model)
+            import google.generativeai as genai
+            
+            api_key = self._settings.google_api_key
+            if not api_key:
+                raise LLMException(
+                    message="Google API key not configured",
+                    details={"setting": "google_api_key"},
+                )
+            
+            genai.configure(api_key=api_key)
+            
+            # Use Gemini 3 Flash for lowest latency
+            model_name = self._settings.gemini_model
+            self._model = genai.GenerativeModel(
+                model_name,
+                generation_config={
+                    "temperature": 0.7,
+                    "top_p": 0.95,
+                    "top_k": 40,
+                    "max_output_tokens": 1024,
+                },
+            )
             
             self._is_initialized = True
-            logger.info(f"LLMService initialized with model: {self._settings.gemini_model}")
+            logger.info(f"LLMService initialized with model: {model_name}")
+            
+        except ImportError:
+            logger.warning("google-generativeai package not installed")
+            self._is_initialized = True
             
         except Exception as e:
             logger.error(f"Failed to initialize LLM service: {e}")
@@ -75,156 +142,232 @@ Guidelines:
     
     async def generate_response(
         self,
-        messages: list[dict[str, str]],
+        user_message: str,
+        conversation_history: list[dict[str, str]],
         system_prompt: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 500,
-    ) -> str:
+        db_context: ConversationContext | None = None,
+    ) -> list[ResponseSegment]:
         """
-        Generate a response for the conversation.
+        Generate response segments for user message.
         
         Args:
-            messages: Conversation history as list of {role, content} dicts
-            system_prompt: Optional custom system prompt
-            temperature: Generation temperature (0-2)
-            max_tokens: Maximum response tokens
+            user_message: User's transcribed speech
+            conversation_history: Previous conversation messages
+            system_prompt: Custom system prompt (or use default)
+            db_context: Database context (doctors, appointments, etc.)
         
         Returns:
-            Generated response text
-        
-        Raises:
-            GenerationError: If generation fails
-            ContextLimitExceeded: If context is too long
+            List of ResponseSegment for TTS synthesis
         """
         if not self._is_initialized:
             await self.initialize()
         
+        start_time = time.time()
+        
         try:
-            prompt = system_prompt or self.DEFAULT_SYSTEM_PROMPT
-            
-            logger.debug(
-                f"Generating response: {len(messages)} messages, "
-                f"temp={temperature}, max_tokens={max_tokens}"
+            # Build full prompt
+            prompt = self._build_prompt(
+                system_prompt or self.DEFAULT_SYSTEM_PROMPT,
+                conversation_history,
+                user_message,
+                db_context,
             )
             
-            # TODO: Implement actual generation
-            # full_prompt = self._build_prompt(prompt, messages)
-            # response = await self._model.generate_content_async(
-            #     full_prompt,
-            #     generation_config={
-            #         "temperature": temperature,
-            #         "max_output_tokens": max_tokens,
-            #     },
-            # )
-            # return response.text
+            # Generate response
+            if self._model:
+                response_text = await self._generate(prompt)
+            else:
+                # Placeholder response
+                response_text = '[{"speaker": "sara", "text": "مرحباً! كيف أقدر أساعدك اليوم؟", "emotion": "happy", "action": "none"}]'
             
-            # Placeholder response
-            last_message = messages[-1]["content"] if messages else ""
-            return f"[LLM Response placeholder for: {last_message[:50]}...]"
+            # Parse JSON response
+            segments = self._parse_response(response_text)
+            
+            # Log metrics
+            total_ms = (time.time() - start_time) * 1000
+            self._total_generations += 1
+            self._total_completion_ms += total_ms
+            
+            logger.info(f"LLM ({total_ms:.0f}ms): {len(segments)} segments")
+            
+            return segments
             
         except Exception as e:
-            error_msg = str(e).lower()
-            
-            if "context" in error_msg or "token" in error_msg:
-                logger.warning(f"Context limit exceeded: {e}")
-                raise ContextLimitExceeded(
-                    message="Conversation context too long",
-                    details={"error": str(e), "message_count": len(messages)},
-                )
-            
-            logger.error(f"Response generation failed: {e}")
-            raise GenerationError(
-                message="Failed to generate response",
-                details={"error": str(e)},
-            )
+            logger.error(f"LLM generation failed: {e}")
+            # Return fallback response
+            return [ResponseSegment(
+                speaker="sara",
+                text="عذراً، حصل خطأ. هل تقدر تعيد؟",
+                emotion="concerned",
+                action="none",
+            )]
     
     async def generate_stream(
         self,
-        messages: list[dict[str, str]],
+        user_message: str,
+        conversation_history: list[dict[str, str]],
         system_prompt: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 500,
+        db_context: ConversationContext | None = None,
     ) -> AsyncGenerator[str, None]:
         """
         Stream response generation for lower latency.
         
-        Yields tokens as they are generated, enabling
-        early TTS synthesis for faster time-to-first-audio.
-        
-        Args:
-            messages: Conversation history
-            system_prompt: Optional custom system prompt
-            temperature: Generation temperature
-            max_tokens: Maximum response tokens
-        
-        Yields:
-            Response text chunks
-        
-        Raises:
-            GenerationError: If generation fails
+        Yields tokens as they are generated.
         """
         if not self._is_initialized:
             await self.initialize()
         
+        if not self._model:
+            yield '[{"speaker": "sara", "text": "مرحباً!", "emotion": "happy"}]'
+            return
+        
+        start_time = time.time()
+        first_token_time = None
+        
         try:
-            prompt = system_prompt or self.DEFAULT_SYSTEM_PROMPT
-            
-            logger.debug(f"Starting streaming generation: {len(messages)} messages")
-            
-            # TODO: Implement streaming generation
-            # full_prompt = self._build_prompt(prompt, messages)
-            # response = await self._model.generate_content_async(
-            #     full_prompt,
-            #     stream=True,
-            #     generation_config={
-            #         "temperature": temperature,
-            #         "max_output_tokens": max_tokens,
-            #     },
-            # )
-            # async for chunk in response:
-            #     yield chunk.text
-            
-            # Placeholder
-            yield "[Streaming response "
-            yield "placeholder]"
-            
-        except Exception as e:
-            logger.error(f"Streaming generation failed: {e}")
-            raise GenerationError(
-                message="Streaming generation failed",
-                details={"error": str(e)},
+            prompt = self._build_prompt(
+                system_prompt or self.DEFAULT_SYSTEM_PROMPT,
+                conversation_history,
+                user_message,
+                db_context,
             )
+            
+            # Stream from Gemini
+            response = await asyncio.to_thread(
+                self._model.generate_content,
+                prompt,
+                stream=True,
+            )
+            
+            for chunk in response:
+                if first_token_time is None:
+                    first_token_time = time.time()
+                    ttft_ms = (first_token_time - start_time) * 1000
+                    self._total_ttft_ms += ttft_ms
+                    logger.debug(f"LLM TTFT: {ttft_ms:.0f}ms")
+                
+                if chunk.text:
+                    yield chunk.text
+                    
+        except Exception as e:
+            logger.error(f"LLM streaming failed: {e}")
+            yield '[{"speaker": "sara", "text": "عذراً، حصل خطأ.", "emotion": "concerned"}]'
+    
+    async def _generate(self, prompt: str) -> str:
+        """Generate complete response."""
+        response = await asyncio.to_thread(
+            self._model.generate_content,
+            prompt,
+        )
+        return response.text
     
     def _build_prompt(
         self,
         system_prompt: str,
-        messages: list[dict[str, str]],
+        conversation_history: list[dict[str, str]],
+        user_message: str,
+        db_context: ConversationContext | None,
     ) -> str:
-        """
-        Build the full prompt from system prompt and messages.
+        """Build the full prompt with context."""
+        parts = [system_prompt, "\n\n"]
         
-        Args:
-            system_prompt: System instructions
-            messages: Conversation messages
+        # Add database context if available
+        if db_context:
+            parts.append("=== معلومات النظام ===\n")
+            
+            if db_context.doctors:
+                parts.append("الأطباء المتاحون:\n")
+                for doc in db_context.doctors[:5]:
+                    parts.append(f"- د. {doc.get('name', 'غير معروف')} ({doc.get('specialty', 'عام')})\n")
+                parts.append("\n")
+            
+            if db_context.appointments:
+                parts.append("المواعيد المتاحة:\n")
+                for apt in db_context.appointments[:5]:
+                    parts.append(f"- {apt.get('date', '')} {apt.get('time', '')}\n")
+                parts.append("\n")
+            
+            if db_context.insurance:
+                parts.append("شركات التأمين المقبولة:\n")
+                for ins in db_context.insurance[:5]:
+                    parts.append(f"- {ins.get('name', '')}\n")
+                parts.append("\n")
         
-        Returns:
-            Formatted prompt string
-        """
-        parts = [f"System: {system_prompt}\n"]
+        # Add conversation history
+        if conversation_history:
+            parts.append("=== المحادثة السابقة ===\n")
+            for msg in conversation_history[-10:]:  # Last 10 messages
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                if role == "user":
+                    parts.append(f"المريض: {content}\n")
+                else:
+                    parts.append(f"المساعد: {content}\n")
+            parts.append("\n")
         
-        for msg in messages:
-            role = msg["role"].capitalize()
-            content = msg["content"]
-            parts.append(f"{role}: {content}")
+        # Add current message
+        parts.append(f"المريض: {user_message}\n\n")
+        parts.append("الرد (بتنسيق JSON array):")
         
-        parts.append("Assistant:")
+        return "".join(parts)
+    
+    def _parse_response(self, response_text: str) -> list[ResponseSegment]:
+        """Parse JSON array response from LLM."""
+        try:
+            # Extract JSON from potential markdown code blocks
+            json_match = re.search(r'\[[\s\S]*?\]', response_text)
+            if json_match:
+                json_str = json_match.group()
+            else:
+                json_str = response_text.strip()
+            
+            # Parse JSON
+            data = json.loads(json_str)
+            
+            # Validate and convert
+            segments = []
+            for item in data:
+                if isinstance(item, dict) and "text" in item:
+                    segment = ResponseSegment(
+                        speaker=item.get("speaker", "sara"),
+                        text=item["text"],
+                        emotion=item.get("emotion", "neutral"),
+                        action=item.get("action", "none"),
+                    )
+                    segments.append(segment)
+            
+            return segments if segments else [
+                ResponseSegment(text=response_text, speaker="sara")
+            ]
+            
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse LLM response as JSON: {e}")
+            # Return as single segment
+            return [ResponseSegment(
+                speaker="sara",
+                text=response_text.strip(),
+                emotion="neutral",
+                action="none",
+            )]
+    
+    def get_stats(self) -> dict[str, float]:
+        """Get LLM performance statistics."""
+        avg_ttft = 0.0
+        avg_completion = 0.0
         
-        return "\n".join(parts)
+        if self._total_generations > 0:
+            avg_ttft = self._total_ttft_ms / self._total_generations
+            avg_completion = self._total_completion_ms / self._total_generations
+        
+        return {
+            "total_generations": self._total_generations,
+            "average_ttft_ms": avg_ttft,
+            "average_completion_ms": avg_completion,
+        }
     
     async def shutdown(self) -> None:
         """Cleanup resources."""
         self._is_initialized = False
-        self._client = None
         self._model = None
         logger.info("LLMService shutdown")
 
@@ -234,12 +377,7 @@ _llm_service: LLMService | None = None
 
 
 def get_llm_service() -> LLMService:
-    """
-    Get the LLM service singleton instance.
-    
-    Returns:
-        LLMService instance
-    """
+    """Get the LLM service singleton instance."""
     global _llm_service
     if _llm_service is None:
         _llm_service = LLMService()
