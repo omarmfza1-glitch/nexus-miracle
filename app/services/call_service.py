@@ -243,12 +243,13 @@ class CallService:
         session = self._sessions[call_control_id]
         
         # 1. Transcribe speech
-        transcript = await self._asr.transcribe_audio(
+        transcription_result = await self._asr.transcribe(
             audio_bytes=audio_bytes,
             language="ar",  # TODO: Detect language
         )
+        transcript = transcription_result.text
         
-        logger.info(f"Transcription: {transcript[:100]}...")
+        logger.info(f"Transcription: {transcript[:100] if len(transcript) > 100 else transcript}")
         
         # Add user message
         session.add_message(
