@@ -259,13 +259,17 @@ class CallService:
         )
         
         # 2. Generate response
-        messages = session.get_conversation_for_llm()
-        response_text = await self._llm.generate_response(
-            messages=messages,
+        conversation_history = session.get_conversation_for_llm()
+        response_segments = await self._llm.generate_response(
+            user_message=transcript,
+            conversation_history=conversation_history,
             system_prompt=session.system_prompt,
         )
         
-        logger.info(f"LLM response: {response_text[:100]}...")
+        # Extract text from segments
+        response_text = " ".join([seg.text for seg in response_segments])
+        
+        logger.info(f"LLM response: {response_text[:100] if len(response_text) > 100 else response_text}")
         
         # Add assistant message
         session.add_message(
