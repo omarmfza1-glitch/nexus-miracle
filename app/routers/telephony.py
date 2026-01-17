@@ -94,7 +94,16 @@ async def handle_telnyx_webhook(request: Request) -> dict[str, str]:
         # Handle different event types
         if event_type == "call.initiated":
             # New incoming call - create session and answer
-            logger.info(f"📞 Incoming call from {caller_phone}")
+            logger.info(f"📞 Incoming call from {caller_phone} to {called_phone}")
+            logger.info(f"📋 Full payload: {json.dumps(payload, default=str)}")
+            
+            # Validate call_control_id
+            if not call_control_id:
+                logger.error("❌ Missing call_control_id in payload!")
+                return {
+                    "status": "error",
+                    "message": "Missing call_control_id",
+                }
             
             # Create call session
             await call_service.create_session(
@@ -108,14 +117,23 @@ async def handle_telnyx_webhook(request: Request) -> dict[str, str]:
             webhook_base = settings.webhook_base_url or "https://nexus-miracle-production.up.railway.app"
             stream_url = f"{webhook_base.replace('https://', 'wss://').replace('http://', 'ws://')}/api/telephony/media/{call_control_id}"
             
-            # Answer the call and start media streaming
-            await telnyx.initialize()
-            await telnyx.answer_call(
-                call_control_id=call_control_id,
-                stream_url=stream_url,
-            )
+            logger.info(f"🔗 Stream URL: {stream_url}")
             
-            logger.info(f"✅ Call answered, streaming to {stream_url}")
+            # Answer the call and start media streaming
+            try:
+                await telnyx.initialize()
+                await telnyx.answer_call(
+                    call_control_id=call_control_id,
+                    stream_url=stream_url,
+                )
+                logger.info(f"✅ Call answered, streaming to {stream_url}")
+            except Exception as answer_error:
+                logger.exception(f"❌ Failed to answer call: {answer_error}")
+                # Don't raise - return error response
+                return {
+                    "status": "error",
+                    "message": f"Failed to answer: {str(answer_error)}",
+                }
             
         elif event_type == "call.answered":
             # Call was answered - greeting will be sent via WebSocket

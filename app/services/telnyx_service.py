@@ -95,6 +95,14 @@ class TelnyxService:
             json=payload,
         )
         
+        # Log detailed error information for debugging
+        if response.status_code >= 400:
+            error_body = response.text
+            logger.error(
+                f"Telnyx answer_call failed: status={response.status_code}, "
+                f"call_control_id={call_control_id}, response={error_body}"
+            )
+        
         response.raise_for_status()
         result = response.json()
         
