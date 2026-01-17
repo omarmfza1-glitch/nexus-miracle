@@ -219,7 +219,7 @@ class CallService:
             finally:
                 # Clear buffer
                 self._audio_buffers[call_control_id] = b""
-                self._vad.reset_state()
+                self._vad.reset()
         
         return result
     
