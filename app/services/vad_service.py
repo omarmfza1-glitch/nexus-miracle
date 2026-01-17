@@ -207,12 +207,37 @@ class VADService:
         Returns:
             Speech probability (0 to 1)
         """
+        # Silero VAD requires minimum 512 samples (32ms at 16kHz)
+        MIN_SAMPLES = 512
+        
+        # Add to buffer
+        self._audio_buffer.append(audio_float)
+        self._buffer_samples += len(audio_float)
+        
+        # If not enough samples yet, use energy-based fallback
+        if self._buffer_samples < MIN_SAMPLES:
+            energy = np.sqrt(np.mean(audio_float ** 2))
+            return min(energy * 10, 1.0)
+        
+        # Concatenate buffer
+        buffered_audio = np.concatenate(self._audio_buffer)
+        
+        # Clear buffer but keep overflow
+        if len(buffered_audio) > MIN_SAMPLES:
+            # Keep samples beyond MIN_SAMPLES for next iteration
+            overflow = buffered_audio[MIN_SAMPLES:]
+            self._audio_buffer = [overflow] if len(overflow) > 0 else []
+            self._buffer_samples = len(overflow) if len(overflow) > 0 else 0
+            buffered_audio = buffered_audio[:MIN_SAMPLES]
+        else:
+            self._audio_buffer = []
+            self._buffer_samples = 0
+        
         if self._model is not None:
             try:
                 import torch
                 
-                # Ensure correct sample count (512 samples = 32ms at 16kHz)
-                audio_tensor = torch.from_numpy(audio_float)
+                audio_tensor = torch.from_numpy(buffered_audio)
                 
                 with torch.no_grad():
                     speech_prob = self._model(audio_tensor, self._sample_rate).item()
@@ -223,7 +248,7 @@ class VADService:
                 logger.warning(f"Silero VAD inference failed: {e}")
         
         # Fallback: energy-based detection
-        energy = np.sqrt(np.mean(audio_float ** 2))
+        energy = np.sqrt(np.mean(buffered_audio ** 2))
         # Convert RMS to pseudo-probability
         speech_prob = min(energy * 10, 1.0)
         return speech_prob
