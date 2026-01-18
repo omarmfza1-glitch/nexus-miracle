@@ -247,9 +247,14 @@ class CallService:
             audio_bytes=audio_bytes,
             language="ar",  # TODO: Detect language
         )
-        transcript = transcription_result.text
+        transcript = transcription_result.text.strip()
         
         logger.info(f"Transcription: {transcript[:100] if len(transcript) > 100 else transcript}")
+        
+        # Skip if transcription is empty (noise/silence detected by VAD)
+        if not transcript:
+            logger.debug("Empty transcription, skipping LLM response")
+            return b""
         
         # Add user message
         session.add_message(
