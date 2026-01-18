@@ -1,4 +1,4 @@
-hggggg"""
+"""
 Nexus Miracle - Telnyx Service
 
 Telnyx Call Control API client for managing phone calls.
@@ -150,6 +150,14 @@ class TelnyxService:
             f"/calls/{call_control_id}/actions/streaming_start",
             json=payload,
         )
+        
+        # Log detailed error information for debugging
+        if response.status_code >= 400:
+            error_body = response.text
+            logger.error(
+                f"Telnyx streaming_start failed: status={response.status_code}, "
+                f"call_control_id={call_control_id}, response={error_body}"
+            )
         
         response.raise_for_status()
         result = response.json()
