@@ -337,34 +337,55 @@ async def media_websocket(websocket: WebSocket, call_control_id: str) -> None:
             if event == "connected":
                 logger.info(f"📡 Telnyx stream connected: {call_control_id}")
                 
-            elif event == "start":
-                # Stream started - send greeting
-                logger.info(f"▶️ Stream started: {call_control_id}")
-                
+                # Send greeting on connect if not sent yet
                 if not greeting_sent:
-                    # Generate and queue greeting
                     try:
-                        # Mark assistant as speaking
                         call_service.set_assistant_speaking(call_control_id, True)
-                        
                         greeting_audio = await call_service.handle_call_answered(call_control_id)
-                        
-                        # Convert to Telnyx format and queue
                         telnyx_audio = audio_processor.ai_to_telnyx(greeting_audio)
                         playback_queue = _playback_queues.get(call_control_id)
                         if playback_queue:
                             await playback_queue.enqueue(telnyx_audio)
-                        
                         greeting_sent = True
-                        logger.info(f"🎤 Greeting queued: {len(greeting_audio)} bytes")
-                        
+                        logger.info(f"🎤 Greeting queued on connect: {len(greeting_audio)} bytes")
                     except Exception as e:
-                        logger.error(f"Failed to send greeting: {e}")
+                        logger.error(f"Failed to send greeting on connect: {e}")
+                
+            elif event == "start":
+                # Stream started - send greeting if not already sent
+                logger.info(f"▶️ Stream started: {call_control_id}")
+                
+                if not greeting_sent:
+                    try:
+                        call_service.set_assistant_speaking(call_control_id, True)
+                        greeting_audio = await call_service.handle_call_answered(call_control_id)
+                        telnyx_audio = audio_processor.ai_to_telnyx(greeting_audio)
+                        playback_queue = _playback_queues.get(call_control_id)
+                        if playback_queue:
+                            await playback_queue.enqueue(telnyx_audio)
+                        greeting_sent = True
+                        logger.info(f"🎤 Greeting queued on start: {len(greeting_audio)} bytes")
+                    except Exception as e:
+                        logger.error(f"Failed to send greeting on start: {e}")
                 
             elif event == "media":
                 # Audio data from caller
                 media = message.get("media", {})
                 track = media.get("track", "")
+                
+                # Fallback: send greeting on first media if not sent yet
+                if not greeting_sent:
+                    try:
+                        call_service.set_assistant_speaking(call_control_id, True)
+                        greeting_audio = await call_service.handle_call_answered(call_control_id)
+                        telnyx_audio = audio_processor.ai_to_telnyx(greeting_audio)
+                        playback_queue = _playback_queues.get(call_control_id)
+                        if playback_queue:
+                            await playback_queue.enqueue(telnyx_audio)
+                        greeting_sent = True
+                        logger.info(f"🎤 Greeting queued on first media: {len(greeting_audio)} bytes")
+                    except Exception as e:
+                        logger.error(f"Failed to send greeting on media: {e}")
                 
                 if track == "inbound":
                     # Decode base64 μ-law audio
