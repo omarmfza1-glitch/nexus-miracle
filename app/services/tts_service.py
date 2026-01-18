@@ -38,18 +38,18 @@ class TTSService:
     Target: <100ms Time to First Byte.
     """
     
-    # Voice configurations
+    # Voice configurations optimized for Arabic
     VOICE_CONFIGS = {
         Voice.SARA: {
-            "stability": 0.5,
-            "similarity_boost": 0.75,
-            "style": 0.4,
+            "stability": 0.65,           # Higher for more consistent Arabic pronunciation
+            "similarity_boost": 0.50,    # Lower allows more natural Arabic expression
+            "style": 0.15,               # Subtle style for professional tone
             "speed": 1.0,
         },
         Voice.NEXUS: {
-            "stability": 0.7,
-            "similarity_boost": 0.8,
-            "style": 0.2,
+            "stability": 0.70,
+            "similarity_boost": 0.55,
+            "style": 0.10,
             "speed": 0.95,
         },
     }
@@ -169,18 +169,18 @@ class TTSService:
             
             logger.debug(f"Synthesizing {len(text)} chars as {voice.value}")
             
-            # Call ElevenLabs TTS API
+            # Call ElevenLabs TTS API with multilingual v2 for better Arabic
             audio = await asyncio.to_thread(
                 self._client.text_to_speech.convert,
                 text=text,
                 voice_id=voice_id,
-                model_id="eleven_flash_v2_5",
+                model_id="eleven_multilingual_v2",  # Better for Arabic than flash
                 output_format=output_format,
                 voice_settings={
                     "stability": voice_config["stability"],
                     "similarity_boost": voice_config["similarity_boost"],
                     "style": voice_config.get("style", 0.0),
-                    "use_speaker_boost": True,
+                    "use_speaker_boost": False,  # Softer, more natural voice
                 },
             )
             
@@ -241,16 +241,17 @@ class TTSService:
             voice_id = self._get_voice_id(voice)
             voice_config = self.VOICE_CONFIGS[voice]
             
-            # Stream from ElevenLabs (convert returns an iterator when streaming)
+            # Stream from ElevenLabs with multilingual v2 for better Arabic
             audio_stream = self._client.text_to_speech.stream(
                 text=text,
                 voice_id=voice_id,
-                model_id="eleven_flash_v2_5",
+                model_id="eleven_multilingual_v2",  # Better for Arabic
                 output_format=output_format,
                 voice_settings={
                     "stability": voice_config["stability"],
                     "similarity_boost": voice_config["similarity_boost"],
                     "style": voice_config.get("style", 0.0),
+                    "use_speaker_boost": False,
                 },
             )
             
