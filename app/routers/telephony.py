@@ -284,11 +284,48 @@ async def media_websocket(websocket: WebSocket, call_control_id: str) -> None:
     # Flag for greeting sent
     greeting_sent = False
     
+    # Silence checker task for interruption handling
+    silence_checker_task: asyncio.Task | None = None
+    
+    async def check_silence_loop():
+        """Periodically check silence duration during interruption."""
+        while True:
+            try:
+                await asyncio.sleep(0.2)  # Check every 200ms
+                
+                result = await call_service.check_interruption_silence(call_control_id)
+                
+                if result["should_say_tafaddal"] and result["phrase_audio"]:
+                    # Queue "تفضل" audio
+                    telnyx_audio = audio_processor.ai_to_telnyx(result["phrase_audio"])
+                    playback_queue = _playback_queues.get(call_control_id)
+                    if playback_queue:
+                        await playback_queue.enqueue(telnyx_audio)
+                        logger.info(f"💬 [{call_control_id}] تفضل queued")
+                
+                elif result["should_process"] and result["response_audio"]:
+                    # User is done - queue the full response
+                    response_audio = result["response_audio"]
+                    telnyx_audio = audio_processor.ai_to_telnyx(response_audio)
+                    playback_queue = _playback_queues.get(call_control_id)
+                    if playback_queue:
+                        call_service.set_assistant_speaking(call_control_id, True)
+                        await playback_queue.enqueue(telnyx_audio)
+                        logger.info(f"🔊 [{call_control_id}] Full response queued: {len(response_audio)} bytes")
+                    
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Silence checker error: {e}")
+    
     try:
         # Start playback sender task
         playback_task = asyncio.create_task(
-            _send_playback_audio(websocket, call_control_id, audio_processor)
+            _send_playback_audio(websocket, call_control_id, audio_processor, call_service)
         )
+        
+        # Start silence checker task
+        silence_checker_task = asyncio.create_task(check_silence_loop())
         
         while True:
             # Receive message from Telnyx
@@ -307,6 +344,9 @@ async def media_websocket(websocket: WebSocket, call_control_id: str) -> None:
                 if not greeting_sent:
                     # Generate and queue greeting
                     try:
+                        # Mark assistant as speaking
+                        call_service.set_assistant_speaking(call_control_id, True)
+                        
                         greeting_audio = await call_service.handle_call_answered(call_control_id)
                         
                         # Convert to Telnyx format and queue
@@ -340,13 +380,23 @@ async def media_websocket(websocket: WebSocket, call_control_id: str) -> None:
                         audio_bytes=pcm_audio,
                     )
                     
-                    # If response audio generated, queue it
-                    if result.get("response_audio"):
+                    # Check if interruption started - clear playback immediately
+                    if result.get("clear_playback"):
+                        playback_queue = _playback_queues.get(call_control_id)
+                        if playback_queue:
+                            playback_queue.clear()
+                        call_service.set_assistant_speaking(call_control_id, False)
+                        logger.info(f"🛑 [{call_control_id}] Playback cleared, listening to user")
+                    
+                    # If response audio generated (non-interruption case), queue it
+                    elif result.get("response_audio"):
                         response_audio = result["response_audio"]
                         telnyx_audio = audio_processor.ai_to_telnyx(response_audio)
                         
                         playback_queue = _playback_queues.get(call_control_id)
                         if playback_queue:
+                            # Mark assistant as speaking before queueing response
+                            call_service.set_assistant_speaking(call_control_id, True)
                             await playback_queue.enqueue(telnyx_audio)
                         
                         logger.info(f"🔊 Response queued: {len(response_audio)} bytes")
@@ -367,6 +417,8 @@ async def media_websocket(websocket: WebSocket, call_control_id: str) -> None:
     finally:
         # Cleanup
         playback_task.cancel()
+        if silence_checker_task:
+            silence_checker_task.cancel()
         
         if call_control_id in _active_connections:
             del _active_connections[call_control_id]
@@ -380,15 +432,20 @@ async def _send_playback_audio(
     websocket: WebSocket,
     call_control_id: str,
     audio_processor,
+    call_service,
 ) -> None:
     """
     Background task to send queued audio to Telnyx.
     
     Sends audio chunks at 20ms intervals to maintain real-time streaming.
+    Notifies call_service when playback completes.
     """
     playback_queue = _playback_queues.get(call_control_id)
     if not playback_queue:
         return
+    
+    # Track if we were previously playing audio
+    was_playing = False
     
     try:
         while True:
@@ -396,6 +453,8 @@ async def _send_playback_audio(
             chunk = await playback_queue.dequeue(timeout=0.02)
             
             if chunk:
+                was_playing = True
+                
                 # Encode as base64
                 payload_b64 = base64.b64encode(chunk).decode("utf-8")
                 
@@ -408,7 +467,14 @@ async def _send_playback_audio(
                     },
                 })
             else:
-                # No audio to send, small sleep to avoid busy loop
+                # No audio to send
+                # If we were playing and now stopped, mark assistant as not speaking
+                if was_playing and not playback_queue.is_playing():
+                    call_service.set_assistant_speaking(call_control_id, False)
+                    was_playing = False
+                    logger.debug(f"🔇 Playback complete for: {call_control_id}")
+                
+                # Small sleep to avoid busy loop
                 await asyncio.sleep(0.01)
                 
     except asyncio.CancelledError:

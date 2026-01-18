@@ -19,7 +19,16 @@ from app.models.conversation import (
     ConversationSession,
 )
 from app.services.asr_service import ASRService, get_asr_service
+from app.services.interruption_service import (
+    InterruptionService,
+    InterruptionState,
+    get_interruption_service,
+)
 from app.services.llm_service import LLMService, get_llm_service
+from app.services.text_correction_service import (
+    TextCorrectionService,
+    get_text_correction_service,
+)
 from app.services.tts_service import TTSService, Voice, get_tts_service
 from app.services.vad_service import VADService, get_vad_service
 
@@ -42,6 +51,8 @@ class CallService:
         llm_service: LLMService | None = None,
         tts_service: TTSService | None = None,
         vad_service: VADService | None = None,
+        interruption_service: InterruptionService | None = None,
+        text_correction_service: TextCorrectionService | None = None,
     ) -> None:
         """
         Initialize the call service.
@@ -51,6 +62,8 @@ class CallService:
             llm_service: LLM service instance (or use default)
             tts_service: TTS service instance (or use default)
             vad_service: VAD service instance (or use default)
+            interruption_service: Interruption service instance (or use default)
+            text_correction_service: Text correction service instance (or use default)
         """
         self._settings = get_settings()
         
@@ -59,12 +72,17 @@ class CallService:
         self._llm = llm_service or get_llm_service()
         self._tts = tts_service or get_tts_service()
         self._vad = vad_service or get_vad_service()
+        self._interruption = interruption_service or get_interruption_service()
+        self._text_correction = text_correction_service or get_text_correction_service()
         
         # Active sessions
         self._sessions: dict[str, ConversationSession] = {}
         
         # Audio buffer for accumulating speech
         self._audio_buffers: dict[str, bytes] = {}
+        
+        # Track if assistant is currently speaking (for interruption detection)
+        self._is_assistant_speaking: dict[str, bool] = {}
         
         logger.info("CallService created")
     
@@ -105,6 +123,10 @@ class CallService:
         
         self._sessions[call_control_id] = session
         self._audio_buffers[call_control_id] = b""
+        self._is_assistant_speaking[call_control_id] = False
+        
+        # Initialize interruption tracking
+        self._interruption.create_session(call_control_id)
         
         logger.info(
             f"Created session {session.id} for call {call_control_id}"
@@ -180,6 +202,12 @@ class CallService:
         Runs VAD to detect speech, accumulates audio,
         and triggers processing when speech ends.
         
+        With interruption handling:
+        - When user interrupts, stop assistant and start accumulating
+        - Continue accumulating until user is TRULY done (long silence)
+        - Only say "تفضل" after brief silence, not after each segment
+        - Process ALL accumulated speech as ONE request
+        
         Args:
             call_control_id: Telnyx call control ID
             audio_bytes: Raw audio bytes
@@ -194,32 +222,123 @@ class CallService:
         # Run VAD
         vad_result = await self._vad.process_audio(audio_bytes)
         
-        # Accumulate audio if speech detected
-        if vad_result["is_speaking"]:
-            self._audio_buffers[call_control_id] += audio_bytes
-        
         result: dict[str, Any] = {
             "vad": vad_result,
             "response_audio": None,
+            "interruption": False,
+            "clear_playback": False,
         }
         
-        # Check if speech ended - trigger response generation
-        if vad_result.get("speech_ended") and self._audio_buffers[call_control_id]:
-            logger.debug(f"Speech ended, processing: {call_control_id}")
+        # Check if we're in interruption mode
+        in_interruption_mode = self._interruption.is_in_interruption_mode(call_control_id)
+        
+        # Handle speech detection
+        if vad_result["is_speaking"]:
+            # Accumulate audio
+            self._audio_buffers[call_control_id] += audio_bytes
             
+            # Check if this is a NEW interruption (user speaks during assistant's turn)
+            if self._is_assistant_speaking.get(call_control_id, False):
+                if self._interruption.should_handle_interruption(call_control_id):
+                    # Start new interruption - just clear playback, don't say anything yet
+                    self._interruption.start_interruption(call_control_id)
+                    result["interruption"] = True
+                    result["clear_playback"] = True
+                    logger.info(f"🛑 [{call_control_id}] Interruption - clearing playback, accumulating speech")
+                    return result
+            
+            # If already in interruption mode, update timing
+            if in_interruption_mode:
+                self._interruption.on_speech_detected(call_control_id)
+                return result
+        
+        # Check if speech ended
+        if vad_result.get("speech_ended"):
+            # If in interruption mode, use special handling
+            if in_interruption_mode:
+                int_result = self._interruption.on_speech_ended(call_control_id)
+                
+                if int_result["should_wait"]:
+                    # Still waiting for more speech
+                    logger.debug(f"[{call_control_id}] Speech segment ended, waiting for more...")
+                    return result
+            
+            # Normal speech end processing (non-interruption or interruption complete)
+            if self._audio_buffers[call_control_id]:
+                logger.debug(f"Speech ended, processing: {call_control_id}")
+                
+                try:
+                    # Process accumulated audio
+                    response_audio = await self._process_speech(
+                        call_control_id,
+                        self._audio_buffers[call_control_id],
+                    )
+                    
+                    result["response_audio"] = response_audio
+                    
+                finally:
+                    # Clear buffer
+                    self._audio_buffers[call_control_id] = b""
+                    self._vad.reset()
+        
+        return result
+    
+    async def check_interruption_silence(self, call_control_id: str) -> dict[str, Any]:
+        """
+        Check if user has been silent long enough during interruption.
+        
+        Should be called periodically from the telephony router.
+        
+        Returns:
+            dict with:
+            - should_say_tafaddal: True if should play "تفضل"
+            - should_process: True if should process accumulated speech
+            - phrase_audio: Audio bytes for "تفضل" if applicable
+            - response_audio: Full response audio if processing complete
+        """
+        result = {
+            "should_say_tafaddal": False,
+            "should_process": False,
+            "phrase_audio": None,
+            "response_audio": None,
+        }
+        
+        # Check if we're in interruption mode
+        if not self._interruption.is_in_interruption_mode(call_control_id):
+            return result
+        
+        # Check silence duration
+        check = self._interruption.check_silence_duration(call_control_id)
+        
+        if check["should_say_tafaddal"] and check["phrase"]:
+            # Generate "تفضل" audio
             try:
-                # Process accumulated audio
-                response_audio = await self._process_speech(
-                    call_control_id,
-                    self._audio_buffers[call_control_id],
-                )
-                
-                result["response_audio"] = response_audio
-                
-            finally:
-                # Clear buffer
-                self._audio_buffers[call_control_id] = b""
-                self._vad.reset()
+                session = self._sessions.get(call_control_id)
+                if session:
+                    voice = Voice.SARA if session.active_voice == "sara" else Voice.NEXUS
+                    audio = await self._tts.synthesize(
+                        text=check["phrase"],
+                        voice=voice,
+                    )
+                    result["should_say_tafaddal"] = True
+                    result["phrase_audio"] = audio
+                    logger.info(f"💬 [{call_control_id}] Generated: {check['phrase']}")
+            except Exception as e:
+                logger.error(f"Failed to generate tafaddal: {e}")
+        
+        elif check["should_process"]:
+            # User is done - process all accumulated speech
+            if self._audio_buffers[call_control_id]:
+                try:
+                    response_audio = await self._process_speech(
+                        call_control_id,
+                        self._audio_buffers[call_control_id],
+                    )
+                    result["should_process"] = True
+                    result["response_audio"] = response_audio
+                finally:
+                    self._audio_buffers[call_control_id] = b""
+                    self._vad.reset()
         
         return result
     
@@ -249,7 +368,14 @@ class CallService:
         )
         transcript = transcription_result.text.strip()
         
-        logger.info(f"Transcription: {transcript[:100] if len(transcript) > 100 else transcript}")
+        logger.info(f"Transcription (raw): {transcript[:100] if len(transcript) > 100 else transcript}")
+        
+        # 2. Apply text correction
+        original_transcript = transcript
+        transcript = self._text_correction.correct(transcript)
+        
+        if transcript != original_transcript:
+            logger.info(f"📝 Text corrected: '{original_transcript}' -> '{transcript}'")
         
         # Skip if transcription is empty (noise/silence detected by VAD)
         if not transcript:
@@ -317,14 +443,94 @@ class CallService:
             "final_state": session.state.value,
         }
         
+        # Get interruption stats
+        interruption_stats = self._interruption.end_session(call_control_id)
+        summary["interruption_count"] = interruption_stats.get("interruption_count", 0)
+        
         # Cleanup
         del self._sessions[call_control_id]
         if call_control_id in self._audio_buffers:
             del self._audio_buffers[call_control_id]
+        if call_control_id in self._is_assistant_speaking:
+            del self._is_assistant_speaking[call_control_id]
         
         logger.info(f"Session ended: {summary}")
         
         return summary
+    
+    async def handle_interruption(
+        self,
+        call_control_id: str,
+    ) -> bytes:
+        """
+        Handle user interruption during assistant's speech.
+        
+        Generates "تفضل" audio to acknowledge the interruption.
+        
+        Args:
+            call_control_id: Telnyx call control ID
+            
+        Returns:
+            Audio bytes for the interruption phrase
+        """
+        session = self._sessions.get(call_control_id)
+        if not session:
+            logger.warning(f"No session for interruption: {call_control_id}")
+            return b""
+        
+        # Get interruption phrase
+        phrase = self._interruption.handle_interruption(call_control_id)
+        
+        # Clear audio buffer (user spoke, so their current speech is interrupted)
+        self._audio_buffers[call_control_id] = b""
+        
+        # Synthesize the interruption phrase
+        try:
+            voice = Voice.SARA if session.active_voice == "sara" else Voice.NEXUS
+            audio = await self._tts.synthesize(
+                text=phrase,
+                voice=voice,
+            )
+            
+            # Mark that we're now waiting for user
+            self._interruption.mark_waiting_for_user(call_control_id)
+            
+            logger.info(f"🛑 Interruption phrase generated: {phrase} ({len(audio)} bytes)")
+            
+            return audio
+            
+        except Exception as e:
+            logger.error(f"Failed to generate interruption phrase: {e}")
+            return b""
+    
+    def set_assistant_speaking(self, call_control_id: str, is_speaking: bool) -> None:
+        """
+        Set whether the assistant is currently speaking.
+        
+        Args:
+            call_control_id: Telnyx call control ID
+            is_speaking: True if assistant is speaking
+        """
+        self._is_assistant_speaking[call_control_id] = is_speaking
+        
+        if is_speaking:
+            self._interruption.set_assistant_speaking(call_control_id)
+        else:
+            self._interruption.set_idle(call_control_id)
+        
+        logger.debug(f"Assistant speaking: {is_speaking} for {call_control_id}")
+    
+    def is_assistant_speaking(self, call_control_id: str) -> bool:
+        """
+        Check if assistant is currently speaking.
+        
+        Args:
+            call_control_id: Telnyx call control ID
+            
+        Returns:
+            True if assistant is speaking
+        """
+        return self._is_assistant_speaking.get(call_control_id, False)
     
     async def switch_voice(
         self,
