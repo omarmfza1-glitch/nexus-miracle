@@ -258,7 +258,7 @@ async def media_websocket(websocket: WebSocket, call_control_id: str) -> None:
     """
     await websocket.accept()
     
-    logger.info(f"🔌 WebSocket connected for call: {call_control_id}")
+    logger.info(f"🔌 WebSocket ACCEPTED for call: {call_control_id}")
     
     # Store connection
     _active_connections[call_control_id] = websocket
@@ -283,6 +283,24 @@ async def media_websocket(websocket: WebSocket, call_control_id: str) -> None:
     
     # Flag for greeting sent
     greeting_sent = False
+    
+    # === SEND GREETING IMMEDIATELY ON WEBSOCKET ACCEPT ===
+    try:
+        logger.info(f"🎤 Generating greeting for: {call_control_id}")
+        call_service.set_assistant_speaking(call_control_id, True)
+        greeting_audio = await call_service.handle_call_answered(call_control_id)
+        
+        if greeting_audio and len(greeting_audio) > 0:
+            telnyx_audio = audio_processor.ai_to_telnyx(greeting_audio)
+            playback_queue = _playback_queues.get(call_control_id)
+            if playback_queue:
+                await playback_queue.enqueue(telnyx_audio)
+            greeting_sent = True
+            logger.info(f"✅ Greeting queued IMMEDIATELY: {len(greeting_audio)} bytes -> {len(telnyx_audio)} bytes μ-law")
+        else:
+            logger.error(f"❌ Greeting audio is empty for: {call_control_id}")
+    except Exception as e:
+        logger.exception(f"❌ Failed to generate greeting: {e}")
     
     # Silence checker task for interruption handling
     silence_checker_task: asyncio.Task | None = None
@@ -333,6 +351,7 @@ async def media_websocket(websocket: WebSocket, call_control_id: str) -> None:
             message = json.loads(raw_message)
             
             event = message.get("event", "")
+            logger.debug(f"📨 [{call_control_id}] WebSocket event: {event}")
             
             if event == "connected":
                 logger.info(f"📡 Telnyx stream connected: {call_control_id}")
