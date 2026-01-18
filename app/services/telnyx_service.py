@@ -1,4 +1,4 @@
-"""
+hggggg"""
 Nexus Miracle - Telnyx Service
 
 Telnyx Call Control API client for managing phone calls.
@@ -119,6 +119,8 @@ class TelnyxService:
         call_control_id: str,
         stream_url: str,
         stream_track: str = "both_tracks",
+        bidirectional_mode: str = "rtp",
+        bidirectional_codec: str = "PCMU",
     ) -> dict[str, Any]:
         """
         Start streaming audio to/from a WebSocket endpoint.
@@ -127,6 +129,8 @@ class TelnyxService:
             call_control_id: Telnyx call control ID
             stream_url: WebSocket URL to stream audio
             stream_track: Which tracks to stream (inbound/outbound/both_tracks)
+            bidirectional_mode: Mode for bidirectional streaming ('rtp' or 'mp3')
+            bidirectional_codec: Codec for RTP mode (PCMU, PCMA, G722, OPUS, L16)
         
         Returns:
             API response data
@@ -136,9 +140,11 @@ class TelnyxService:
         payload = {
             "stream_url": stream_url,
             "stream_track": stream_track,
+            "stream_bidirectional_mode": bidirectional_mode,
+            "stream_bidirectional_codec": bidirectional_codec,
         }
         
-        logger.info(f"Starting media stream for {call_control_id} -> {stream_url}")
+        logger.info(f"Starting media stream for {call_control_id} -> {stream_url} (mode={bidirectional_mode}, codec={bidirectional_codec})")
         
         response = await client.post(
             f"/calls/{call_control_id}/actions/streaming_start",
