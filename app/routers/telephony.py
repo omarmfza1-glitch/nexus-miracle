@@ -448,35 +448,22 @@ async def _send_playback_audio(
     Background task to send queued audio to Telnyx.
     
     Sends audio chunks at 20ms intervals to maintain real-time streaming.
-    Uses precise timing to prevent audio choppiness.
-    Notifies call_service when playback completes.
+    Uses simple fixed timing for consistent playback.
     """
-    import time
-    
     playback_queue = _playback_queues.get(call_control_id)
     if not playback_queue:
         return
     
     # Track if we were previously playing audio
     was_playing = False
-    last_send_time = 0.0
-    CHUNK_INTERVAL = 0.020  # 20ms per chunk
     
     try:
         while True:
-            # Get next chunk (with short timeout)
-            chunk = await playback_queue.dequeue(timeout=0.005)
+            # Get next chunk
+            chunk = await playback_queue.dequeue(timeout=0.01)
             
             if chunk:
                 was_playing = True
-                
-                # Calculate timing for proper pacing
-                current_time = time.perf_counter()
-                if last_send_time > 0:
-                    elapsed = current_time - last_send_time
-                    if elapsed < CHUNK_INTERVAL:
-                        # Wait to maintain 20ms rhythm
-                        await asyncio.sleep(CHUNK_INTERVAL - elapsed)
                 
                 # Encode as base64
                 payload_b64 = base64.b64encode(chunk).decode("utf-8")
@@ -490,18 +477,18 @@ async def _send_playback_audio(
                     },
                 })
                 
-                last_send_time = time.perf_counter()
+                # Fixed 20ms delay for each chunk
+                await asyncio.sleep(0.020)
+                
             else:
                 # No audio to send
-                # If we were playing and now stopped, mark assistant as not speaking
                 if was_playing and not playback_queue.is_playing():
                     call_service.set_assistant_speaking(call_control_id, False)
                     was_playing = False
-                    last_send_time = 0.0  # Reset timing
                     logger.debug(f"🔇 Playback complete for: {call_control_id}")
                 
                 # Small sleep to avoid busy loop
-                await asyncio.sleep(0.005)
+                await asyncio.sleep(0.01)
                 
     except asyncio.CancelledError:
         logger.debug(f"Playback task cancelled: {call_control_id}")

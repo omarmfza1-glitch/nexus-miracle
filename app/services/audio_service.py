@@ -201,16 +201,22 @@ class AudioProcessor:
         Returns:
             μ-law encoded 8kHz audio bytes
         """
-        # Convert bytes to numpy array
-        pcm_array = np.frombuffer(pcm_16k, dtype=np.int16)
-        
-        # Resample 16kHz to 8kHz
-        pcm_8k = self.resample(pcm_array, 16000, 8000)
-        
-        # Encode to μ-law
-        ulaw_8k = self.pcm_to_ulaw(pcm_8k)
-        
-        return ulaw_8k
+        try:
+            # Use audioop for high-quality resampling (16kHz -> 8kHz)
+            # ratecv returns (converted_bytes, state) - we only need the bytes
+            pcm_8k, _ = audioop.ratecv(pcm_16k, 2, 1, 16000, 8000, None)
+            
+            # Encode to μ-law
+            ulaw_8k = audioop.lin2ulaw(pcm_8k, 2)
+            
+            return ulaw_8k
+        except Exception as e:
+            logger.error(f"AI to Telnyx conversion failed: {e}")
+            # Fallback to numpy-based conversion
+            pcm_array = np.frombuffer(pcm_16k, dtype=np.int16)
+            pcm_8k = self.resample(pcm_array, 16000, 8000)
+            ulaw_8k = self.pcm_to_ulaw(pcm_8k)
+            return ulaw_8k
     
     def get_chunk_samples(self, sample_rate: int, duration_ms: int = 20) -> int:
         """
