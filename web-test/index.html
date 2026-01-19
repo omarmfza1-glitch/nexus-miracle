@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nexus Miracle - اختبار الصوت</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+        }
+        
+        .container {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            padding: 40px;
+            max-width: 500px;
+            width: 90%;
+            text-align: center;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
+        
+        h1 {
+            font-size: 1.8rem;
+            margin-bottom: 10px;
+            color: #00d4ff;
+        }
+        
+        .subtitle {
+            color: #aaa;
+            margin-bottom: 30px;
+        }
+        
+        .status {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 20px;
+            min-height: 60px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-left: 10px;
+            animation: pulse 2s infinite;
+        }
+        
+        .status-dot.disconnected { background: #ff4444; }
+        .status-dot.connecting { background: #ffaa00; }
+        .status-dot.connected { background: #00ff88; }
+        .status-dot.speaking { background: #00d4ff; animation: pulse 0.5s infinite; }
+        .status-dot.listening { background: #ff6b6b; animation: pulse 0.3s infinite; }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(0.9); }
+        }
+        
+        .btn {
+            padding: 15px 40px;
+            font-size: 1.1rem;
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin: 10px;
+        }
+        
+        .btn-start {
+            background: linear-gradient(135deg, #00d4ff, #00ff88);
+            color: #1a1a2e;
+            font-weight: bold;
+        }
+        
+        .btn-start:hover {
+            transform: scale(1.05);
+            box-shadow: 0 0 20px rgba(0, 212, 255, 0.5);
+        }
+        
+        .btn-stop {
+            background: linear-gradient(135deg, #ff4444, #ff6b6b);
+            color: #fff;
+        }
+        
+        .btn-stop:hover {
+            transform: scale(1.05);
+        }
+        
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .transcript {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 10px;
+            padding: 20px;
+            margin-top: 20px;
+            text-align: right;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        
+        .transcript h3 {
+            color: #00d4ff;
+            margin-bottom: 10px;
+            font-size: 0.9rem;
+        }
+        
+        .transcript-content {
+            color: #ddd;
+            line-height: 1.6;
+            font-size: 0.95rem;
+        }
+        
+        .message {
+            padding: 8px 12px;
+            margin: 5px 0;
+            border-radius: 10px;
+        }
+        
+        .message.user {
+            background: rgba(0, 212, 255, 0.2);
+            text-align: right;
+        }
+        
+        .message.assistant {
+            background: rgba(0, 255, 136, 0.2);
+            text-align: right;
+        }
+        
+        .config {
+            margin-top: 20px;
+            text-align: right;
+        }
+        
+        .config input {
+            width: 100%;
+            padding: 10px;
+            border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.2);
+            background: rgba(0,0,0,0.3);
+            color: #fff;
+            margin-top: 5px;
+            direction: ltr;
+            text-align: left;
+        }
+        
+        .config label {
+            font-size: 0.85rem;
+            color: #aaa;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎤 Nexus Miracle</h1>
+        <p class="subtitle">اختبار المساعد الصوتي</p>
+        
+        <div class="status">
+            <span id="statusText">غير متصل</span>
+            <span class="status-dot disconnected" id="statusDot"></span>
+        </div>
+        
+        <div>
+            <button class="btn btn-start" id="startBtn" onclick="startCall()">ابدأ المكالمة</button>
+            <button class="btn btn-stop" id="stopBtn" onclick="stopCall()" disabled>إنهاء المكالمة</button>
+        </div>
+        
+        <div class="transcript">
+            <h3>📝 المحادثة</h3>
+            <div class="transcript-content" id="transcript"></div>
+        </div>
+        
+        <div class="config">
+            <label>رابط الخادم (WebSocket URL)</label>
+            <input type="text" id="serverUrl" value="wss://nexus-miracle-production.up.railway.app/api/telephony/web-test">
+        </div>
+    </div>
+    
+    <script>
+        let ws = null;
+        let audioContext = null;
+        let mediaStream = null;
+        let scriptProcessor = null;
+        let isConnected = false;
+        let audioQueue = [];
+        let isPlaying = false;
+        
+        const statusText = document.getElementById('statusText');
+        const statusDot = document.getElementById('statusDot');
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const transcript = document.getElementById('transcript');
+        const serverUrlInput = document.getElementById('serverUrl');
+        
+        function updateStatus(status, text) {
+            statusDot.className = 'status-dot ' + status;
+            statusText.textContent = text;
+        }
+        
+        function addMessage(role, text) {
+            const div = document.createElement('div');
+            div.className = 'message ' + role;
+            div.textContent = text;
+            transcript.appendChild(div);
+            transcript.scrollTop = transcript.scrollHeight;
+        }
+        
+        async function startCall() {
+            try {
+                updateStatus('connecting', 'جاري الاتصال...');
+                startBtn.disabled = true;
+                
+                // Get microphone access
+                mediaStream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: {
+                        sampleRate: 16000,
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true
+                    } 
+                });
+                
+                // Create audio context
+                audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+                
+                // Connect to WebSocket
+                const wsUrl = serverUrlInput.value;
+                ws = new WebSocket(wsUrl);
+                
+                ws.onopen = () => {
+                    isConnected = true;
+                    updateStatus('connected', 'متصل - جاهز');
+                    stopBtn.disabled = false;
+                    startAudioCapture();
+                };
+                
+                ws.onmessage = async (event) => {
+                    const data = JSON.parse(event.data);
+                    
+                    if (data.type === 'audio') {
+                        // Decode base64 audio and play
+                        const audioData = base64ToArrayBuffer(data.audio);
+                        playAudio(audioData);
+                        updateStatus('speaking', 'المساعد يتحدث...');
+                    } else if (data.type === 'transcript') {
+                        addMessage(data.role, data.text);
+                    } else if (data.type === 'listening') {
+                        updateStatus('listening', 'يستمع...');
+                    } else if (data.type === 'greeting') {
+                        addMessage('assistant', data.text);
+                    }
+                };
+                
+                ws.onclose = () => {
+                    isConnected = false;
+                    updateStatus('disconnected', 'انتهى الاتصال');
+                    cleanup();
+                };
+                
+                ws.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                    updateStatus('disconnected', 'خطأ في الاتصال');
+                    cleanup();
+                };
+                
+            } catch (error) {
+                console.error('Error starting call:', error);
+                updateStatus('disconnected', 'خطأ: ' + error.message);
+                startBtn.disabled = false;
+            }
+        }
+        
+        function startAudioCapture() {
+            const source = audioContext.createMediaStreamSource(mediaStream);
+            scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+            
+            scriptProcessor.onaudioprocess = (event) => {
+                if (!isConnected || !ws || ws.readyState !== WebSocket.OPEN) return;
+                
+                const inputData = event.inputBuffer.getChannelData(0);
+                
+                // Convert float32 to int16
+                const int16Data = new Int16Array(inputData.length);
+                for (let i = 0; i < inputData.length; i++) {
+                    const s = Math.max(-1, Math.min(1, inputData[i]));
+                    int16Data[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                }
+                
+                // Send as base64
+                const base64 = arrayBufferToBase64(int16Data.buffer);
+                ws.send(JSON.stringify({
+                    type: 'audio',
+                    audio: base64
+                }));
+            };
+            
+            source.connect(scriptProcessor);
+            scriptProcessor.connect(audioContext.destination);
+        }
+        
+        async function playAudio(audioData) {
+            audioQueue.push(audioData);
+            if (!isPlaying) {
+                processAudioQueue();
+            }
+        }
+        
+        async function processAudioQueue() {
+            if (audioQueue.length === 0) {
+                isPlaying = false;
+                updateStatus('connected', 'جاهز للاستماع');
+                return;
+            }
+            
+            isPlaying = true;
+            const audioData = audioQueue.shift();
+            
+            try {
+                // Convert Int16 to Float32 for Web Audio API
+                const int16Array = new Int16Array(audioData);
+                const float32Array = new Float32Array(int16Array.length);
+                for (let i = 0; i < int16Array.length; i++) {
+                    float32Array[i] = int16Array[i] / 32768;
+                }
+                
+                const audioBuffer = audioContext.createBuffer(1, float32Array.length, 16000);
+                audioBuffer.getChannelData(0).set(float32Array);
+                
+                const source = audioContext.createBufferSource();
+                source.buffer = audioBuffer;
+                source.connect(audioContext.destination);
+                source.onended = () => processAudioQueue();
+                source.start();
+            } catch (error) {
+                console.error('Error playing audio:', error);
+                processAudioQueue();
+            }
+        }
+        
+        function stopCall() {
+            if (ws) {
+                ws.close();
+            }
+            cleanup();
+            updateStatus('disconnected', 'تم إنهاء المكالمة');
+        }
+        
+        function cleanup() {
+            if (scriptProcessor) {
+                scriptProcessor.disconnect();
+                scriptProcessor = null;
+            }
+            if (mediaStream) {
+                mediaStream.getTracks().forEach(track => track.stop());
+                mediaStream = null;
+            }
+            if (audioContext && audioContext.state !== 'closed') {
+                audioContext.close();
+                audioContext = null;
+            }
+            ws = null;
+            isConnected = false;
+            audioQueue = [];
+            isPlaying = false;
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+        }
+        
+        function arrayBufferToBase64(buffer) {
+            let binary = '';
+            const bytes = new Uint8Array(buffer);
+            for (let i = 0; i < bytes.byteLength; i++) {
+                binary += String.fromCharCode(bytes[i]);
+            }
+            return btoa(binary);
+        }
+        
+        function base64ToArrayBuffer(base64) {
+            const binary = atob(base64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {
+                bytes[i] = binary.charCodeAt(i);
+            }
+            return bytes.buffer;
+        }
+    </script>
+</body>
+</html>

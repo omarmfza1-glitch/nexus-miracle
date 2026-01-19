@@ -504,37 +504,109 @@ async def _send_playback_audio(
 
 
 # ===========================================
-# Legacy WebSocket (for backward compatibility)
+# Web Testing WebSocket (Browser Direct)
 # ===========================================
 
-@router.websocket("/ws")
-async def telephony_websocket(websocket: WebSocket) -> None:
-    """Legacy WebSocket endpoint for testing."""
+@router.websocket("/web-test")
+async def web_test_websocket(websocket: WebSocket) -> None:
+    """
+    WebSocket endpoint for browser-based voice testing.
+    
+    Receives PCM 16kHz audio from browser, processes it, and returns responses.
+    No Telnyx/μ-law conversion needed.
+    """
     await websocket.accept()
-    client_id = id(websocket)
-    logger.info(f"Legacy WebSocket connected: {client_id}")
+    session_id = f"web-{id(websocket)}"
+    logger.info(f"🌐 Web test session started: {session_id}")
+    
+    # Get services
+    call_service = get_call_service()
+    
+    # Create session
+    try:
+        session = await call_service.create_session(
+            call_control_id=session_id,
+            caller_phone="web-test",
+            called_phone="web-test",
+        )
+    except Exception as e:
+        logger.error(f"Failed to create session: {e}")
+        await websocket.close()
+        return
+    
+    # Track state
+    greeting_sent = False
+    
+    async def send_audio_response(audio_bytes: bytes):
+        """Send audio back to browser as base64."""
+        if audio_bytes and len(audio_bytes) > 0:
+            audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+            await websocket.send_json({
+                "type": "audio",
+                "audio": audio_b64,
+            })
     
     try:
+        # Send greeting immediately
+        logger.info(f"🎤 Generating greeting for web: {session_id}")
+        call_service.set_assistant_speaking(session_id, True)
+        greeting_audio = await call_service.handle_call_answered(session_id)
+        
+        if greeting_audio and len(greeting_audio) > 0:
+            # Send greeting text
+            await websocket.send_json({
+                "type": "greeting",
+                "text": "مرحباً بك في نيكسوس ميراكل. كيف يمكنني مساعدتك اليوم؟",
+            })
+            # Send greeting audio
+            await send_audio_response(greeting_audio)
+            greeting_sent = True
+            logger.info(f"✅ Greeting sent to web client: {len(greeting_audio)} bytes")
+        
+        call_service.set_assistant_speaking(session_id, False)
+        
+        # Main loop - receive and process audio
         while True:
-            data = await websocket.receive()
+            data = await websocket.receive_json()
             
-            if "bytes" in data:
-                audio_bytes = data["bytes"]
-                logger.debug(f"Received audio: {len(audio_bytes)} bytes")
-                await websocket.send_bytes(audio_bytes)
+            if data.get("type") == "audio":
+                # Decode audio from browser (PCM 16kHz, Int16)
+                audio_b64 = data.get("audio", "")
+                audio_bytes = base64.b64decode(audio_b64)
                 
-            elif "text" in data:
-                message = data["text"]
-                logger.debug(f"Received message: {message}")
-                await websocket.send_json({
-                    "type": "ack",
-                    "message": "Received",
-                })
+                # Process audio chunk
+                result = await call_service.process_audio_chunk(
+                    call_control_id=session_id,
+                    audio_bytes=audio_bytes,
+                )
                 
+                # Check for response audio
+                if result.get("response_audio"):
+                    response_audio = result["response_audio"]
+                    
+                    # Send transcript
+                    await websocket.send_json({
+                        "type": "listening",
+                    })
+                    
+                    # Send audio
+                    call_service.set_assistant_speaking(session_id, True)
+                    await send_audio_response(response_audio)
+                    call_service.set_assistant_speaking(session_id, False)
+                    
+                    logger.info(f"🔊 Response sent to web: {len(response_audio)} bytes")
+                    
     except WebSocketDisconnect:
-        logger.info(f"Legacy WebSocket disconnected: {client_id}")
+        logger.info(f"🌐 Web test session disconnected: {session_id}")
     except Exception as e:
-        logger.exception(f"WebSocket error: {e}")
+        logger.exception(f"Web test error: {e}")
+    finally:
+        # End session
+        try:
+            call_service.end_session(session_id)
+        except:
+            pass
+        logger.info(f"🧹 Web test cleanup complete: {session_id}")
 
 
 @router.get(
