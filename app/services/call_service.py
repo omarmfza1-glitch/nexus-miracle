@@ -154,6 +154,7 @@ class CallService:
         Handle call answered event.
         
         Updates session state and generates greeting.
+        Protected against multiple calls - will only generate greeting once.
         
         Args:
             call_control_id: Telnyx call control ID
@@ -167,6 +168,12 @@ class CallService:
                 message="Session not found",
                 details={"call_control_id": call_control_id},
             )
+        
+        # Guard: Only generate greeting once
+        if session.state in (CallState.ANSWERED, CallState.ACTIVE):
+            if hasattr(session, '_greeting_audio') and session._greeting_audio:
+                logger.debug(f"Returning cached greeting for: {call_control_id}")
+                return session._greeting_audio
         
         session.update_state(CallState.ANSWERED)
         
@@ -184,6 +191,9 @@ class CallService:
             text=greeting,
             voice=Voice.SARA,
         )
+        
+        # Cache greeting audio
+        session._greeting_audio = audio
         
         session.update_state(CallState.ACTIVE)
         
