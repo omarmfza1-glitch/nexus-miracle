@@ -447,28 +447,34 @@ async def _send_playback_audio(
     """
     Background task to send queued audio to Telnyx.
     
-    Sends audio chunks at 20ms intervals to maintain real-time streaming.
-    Uses simple fixed timing for consistent playback.
+    Sends audio chunks as fast as possible while maintaining real-time rate.
+    Uses adaptive timing to reduce latency.
     """
+    import time
+    
     playback_queue = _playback_queues.get(call_control_id)
     if not playback_queue:
         return
     
-    # Track if we were previously playing audio
     was_playing = False
+    chunks_sent = 0
+    start_time = 0.0
+    CHUNK_DURATION = 0.020  # Each chunk is 20ms of audio
     
     try:
         while True:
-            # Get next chunk
-            chunk = await playback_queue.dequeue(timeout=0.01)
+            chunk = await playback_queue.dequeue(timeout=0.015)
             
             if chunk:
-                was_playing = True
+                if not was_playing:
+                    was_playing = True
+                    chunks_sent = 0
+                    start_time = time.perf_counter()
                 
-                # Encode as base64
+                chunks_sent += 1
+                
+                # Encode and send
                 payload_b64 = base64.b64encode(chunk).decode("utf-8")
-                
-                # Send to Telnyx
                 await websocket.send_json({
                     "event": "media",
                     "media": {
@@ -477,17 +483,18 @@ async def _send_playback_audio(
                     },
                 })
                 
-                # Fixed 20ms delay for each chunk
-                await asyncio.sleep(0.020)
+                # Adaptive timing: only wait if we're ahead of real-time
+                expected_time = chunks_sent * CHUNK_DURATION
+                actual_time = time.perf_counter() - start_time
+                if actual_time < expected_time - 0.005:  # 5ms buffer
+                    await asyncio.sleep(expected_time - actual_time)
                 
             else:
-                # No audio to send
                 if was_playing and not playback_queue.is_playing():
                     call_service.set_assistant_speaking(call_control_id, False)
                     was_playing = False
                     logger.debug(f"🔇 Playback complete for: {call_control_id}")
                 
-                # Small sleep to avoid busy loop
                 await asyncio.sleep(0.01)
                 
     except asyncio.CancelledError:

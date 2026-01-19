@@ -38,18 +38,18 @@ class TTSService:
     Target: <100ms Time to First Byte.
     """
     
-    # Voice configurations optimized for Arabic
+    # Voice configurations optimized for phone calls (clearer, more stable)
     VOICE_CONFIGS = {
         Voice.SARA: {
-            "stability": 0.65,           # Higher for more consistent Arabic pronunciation
-            "similarity_boost": 0.50,    # Lower allows more natural Arabic expression
-            "style": 0.15,               # Subtle style for professional tone
+            "stability": 0.80,           # Higher for cleaner phone audio
+            "similarity_boost": 0.40,    # Lower for more natural sound
+            "style": 0.05,               # Minimal style for clearest audio
             "speed": 1.0,
         },
         Voice.NEXUS: {
-            "stability": 0.70,
-            "similarity_boost": 0.55,
-            "style": 0.10,
+            "stability": 0.80,
+            "similarity_boost": 0.45,
+            "style": 0.05,
             "speed": 0.95,
         },
     }
