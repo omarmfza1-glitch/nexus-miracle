@@ -45,8 +45,8 @@ class InterruptionService:
     ]
     
     # Timing configuration (in seconds)
-    PAUSE_THRESHOLD = 0.8  # Silence duration to consider user paused
-    FINAL_SILENCE_THRESHOLD = 1.5  # Silence duration to consider user done
+    PAUSE_THRESHOLD = 0.5  # Silence duration to consider user paused
+    FINAL_SILENCE_THRESHOLD = 1.0  # Silence duration to consider user done
     
     def __init__(self):
         """Initialize the interruption service."""
