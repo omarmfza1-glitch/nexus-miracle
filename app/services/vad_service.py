@@ -48,7 +48,7 @@ class VADService:
         self._sample_rate = 16000  # Silero expects 16kHz
         self._threshold = self._settings.vad_threshold
         self._min_silence_ms = self._settings.vad_min_silence_ms
-        self._min_speech_ms = 250  # Minimum speech duration
+        self._min_speech_ms = 400  # Minimum speech duration - requires sustained speech
         
         # Tracking state
         self._is_speaking = False
