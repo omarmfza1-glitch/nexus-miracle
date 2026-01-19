@@ -142,7 +142,7 @@ class Settings(BaseSettings):
     )
     audio_channels: int = Field(default=1, ge=1, le=2, description="Audio channels")
     vad_threshold: float = Field(
-        default=0.5,
+        default=0.7,
         ge=0.0,
         le=1.0,
         description="VAD confidence threshold"

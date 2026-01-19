@@ -84,6 +84,9 @@ class CallService:
         # Track if assistant is currently speaking (for interruption detection)
         self._is_assistant_speaking: dict[str, bool] = {}
         
+        # Track greeting protection period (no interruptions during greeting)
+        self._greeting_end_time: dict[str, float] = {}
+        
         logger.info("CallService created")
     
     async def initialize(self) -> None:
@@ -162,6 +165,8 @@ class CallService:
         Returns:
             Greeting audio bytes
         """
+        import time
+        
         session = self._sessions.get(call_control_id)
         if not session:
             raise NexusMiracleException(
@@ -194,6 +199,13 @@ class CallService:
         
         # Cache greeting audio
         session._greeting_audio = audio
+        
+        # Set greeting protection period (audio duration + 2 seconds buffer)
+        audio_duration_sec = len(audio) / (16000 * 2)  # 16kHz, 16-bit = 32 bytes per second... wait, 2 bytes per sample
+        # Actually: 16000 samples/sec * 2 bytes/sample = 32000 bytes/sec
+        audio_duration_sec = len(audio) / 32000
+        self._greeting_end_time[call_control_id] = time.time() + audio_duration_sec + 2.0
+        logger.info(f"🛡️ Greeting protection until: {audio_duration_sec + 2.0:.1f}s from now")
         
         session.update_state(CallState.ACTIVE)
         
@@ -229,6 +241,14 @@ class CallService:
         if not session:
             return {"error": "Session not found"}
         
+        import time
+        
+        # Check if we're in greeting protection period
+        greeting_protection_active = False
+        greeting_end = self._greeting_end_time.get(call_control_id, 0)
+        if time.time() < greeting_end:
+            greeting_protection_active = True
+        
         # Run VAD
         vad_result = await self._vad.process_audio(audio_bytes)
         
@@ -238,6 +258,10 @@ class CallService:
             "interruption": False,
             "clear_playback": False,
         }
+        
+        # During greeting protection, don't process speech/interruptions
+        if greeting_protection_active:
+            return result
         
         # Check if we're in interruption mode
         in_interruption_mode = self._interruption.is_in_interruption_mode(call_control_id)
