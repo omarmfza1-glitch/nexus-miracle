@@ -252,6 +252,12 @@ class CallService:
         # Run VAD
         vad_result = await self._vad.process_audio(audio_bytes)
         
+        # Debug log VAD result
+        speech_prob = vad_result.get('speech_probability', 0)
+        is_speaking = vad_result.get('is_speaking', False)
+        if speech_prob > 0.3 or is_speaking:
+            logger.debug(f"🎙️ [{call_control_id}] VAD: prob={speech_prob:.2f}, speaking={is_speaking}")
+        
         result: dict[str, Any] = {
             "vad": vad_result,
             "response_audio": None,
