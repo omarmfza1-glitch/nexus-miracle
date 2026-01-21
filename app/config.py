@@ -144,10 +144,10 @@ class Settings(BaseSettings):
     )
     audio_channels: int = Field(default=1, ge=1, le=2, description="Audio channels")
     vad_threshold: float = Field(
-        default=0.95,
+        default=0.5,
         ge=0.0,
         le=1.0,
-        description="VAD confidence threshold - high for noisy environments"
+        description="VAD confidence threshold - 0.5 for web, 0.95 for noisy telephony"
     )
     vad_min_silence_ms: int = Field(
         default=200,
