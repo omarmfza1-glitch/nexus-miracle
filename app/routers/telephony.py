@@ -568,11 +568,14 @@ async def web_test_websocket(websocket: WebSocket) -> None:
         # Main loop - receive and process audio
         while True:
             data = await websocket.receive_json()
+            msg_type = data.get("type")
+            logger.debug(f"📥 [{session_id}] Received message type: {msg_type}")
             
-            if data.get("type") == "audio":
+            if msg_type == "audio":
                 # Decode audio from browser (PCM 16kHz, Int16)
                 audio_b64 = data.get("audio", "")
                 audio_bytes = base64.b64decode(audio_b64)
+                logger.debug(f"🎤 [{session_id}] Received audio: {len(audio_bytes)} bytes")
                 
                 # Process audio chunk
                 result = await call_service.process_audio_chunk(
