@@ -38,12 +38,12 @@ class TTSService:
     Target: <100ms Time to First Byte.
     """
     
-    # Voice configurations optimized for phone calls (clearer, more stable)
+    # Default voice configurations (can be overridden by RuntimeSettings)
     VOICE_CONFIGS = {
         Voice.SARA: {
-            "stability": 0.80,           # Higher for cleaner phone audio
-            "similarity_boost": 0.40,    # Lower for more natural sound
-            "style": 0.05,               # Minimal style for clearest audio
+            "stability": 0.80,
+            "similarity_boost": 0.40,
+            "style": 0.05,
             "speed": 1.0,
         },
         Voice.NEXUS: {
@@ -61,6 +61,10 @@ class TTSService:
         self._is_initialized = False
         self._active_voice = Voice.SARA
         
+        # Import runtime settings for dynamic configuration
+        from app.services.runtime_settings import get_runtime_settings
+        self._runtime_settings = get_runtime_settings()
+        
         # Voice ID cache
         self._voice_ids: dict[Voice, str] = {}
         
@@ -69,7 +73,7 @@ class TTSService:
         self._total_ttfb_ms = 0.0
         self._total_bytes = 0
         
-        logger.info("TTSService created")
+        logger.info("TTSService created with dynamic settings")
     
     async def initialize(self) -> None:
         """
@@ -93,7 +97,7 @@ class TTSService:
             
             self._client = ElevenLabs(api_key=api_key)
             
-            # Get voice IDs from settings
+            # Initial voice IDs from settings (will be overridden by RuntimeSettings)
             sara_id = self._settings.elevenlabs_voice_sara
             nexus_id = self._settings.elevenlabs_voice_nexus
             
@@ -121,13 +125,29 @@ class TTSService:
             )
     
     def _get_voice_id(self, voice: Voice) -> str:
-        """Get ElevenLabs voice ID for a voice."""
+        """Get ElevenLabs voice ID for a voice - dynamically from RuntimeSettings."""
+        # First check RuntimeSettings for dynamic updates
+        if voice == Voice.SARA and self._runtime_settings.voice_sara_id:
+            return self._runtime_settings.voice_sara_id
+        if voice == Voice.NEXUS and self._runtime_settings.voice_nexus_id:
+            return self._runtime_settings.voice_nexus_id
+        
+        # Fallback to cached IDs
         if voice not in self._voice_ids:
             raise VoiceNotFoundError(
                 message=f"Voice '{voice.value}' not configured",
                 details={"voice": voice.value},
             )
         return self._voice_ids[voice]
+    
+    def _get_voice_settings(self, voice: Voice) -> dict[str, float]:
+        """Get voice settings - dynamically from RuntimeSettings."""
+        return {
+            "stability": self._runtime_settings.tts_stability,
+            "similarity_boost": self._runtime_settings.tts_similarity_boost,
+            "style": self.VOICE_CONFIGS[voice].get("style", 0.0),
+            "use_speaker_boost": False,
+        }
     
     async def synthesize(
         self,
@@ -163,9 +183,10 @@ class TTSService:
         
         start_time = time.time()
         
+        
         try:
             voice_id = self._get_voice_id(voice)
-            voice_config = self.VOICE_CONFIGS[voice]
+            voice_settings = self._get_voice_settings(voice)  # Dynamic settings
             
             logger.debug(f"Synthesizing {len(text)} chars as {voice.value}")
             
@@ -176,12 +197,7 @@ class TTSService:
                 voice_id=voice_id,
                 model_id="eleven_multilingual_v2",  # Better for Arabic than flash
                 output_format=output_format,
-                voice_settings={
-                    "stability": voice_config["stability"],
-                    "similarity_boost": voice_config["similarity_boost"],
-                    "style": voice_config.get("style", 0.0),
-                    "use_speaker_boost": False,  # Softer, more natural voice
-                },
+                voice_settings=voice_settings,  # Use dynamic settings
             )
             
             # Collect all audio bytes

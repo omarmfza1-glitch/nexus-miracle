@@ -186,23 +186,43 @@ async def get_admin_settings() -> dict[str, Any]:
 async def update_admin_settings(
     request: UpdateSettingsRequest,
 ) -> dict[str, Any]:
-    """Update admin settings."""
+    """Update admin settings - applies immediately to voice assistant."""
     logger.info(f"Updating settings: {request.model_dump_json()}")
     
     settings = get_settings()
     
+    # Import and update RuntimeSettings for immediate effect
+    from app.services.runtime_settings import get_runtime_settings
+    runtime = get_runtime_settings()
+    
+    # Apply voice settings to RuntimeSettings
+    if request.voice:
+        if request.voice.primary_voice:
+            runtime.voice_sara_id = request.voice.primary_voice
+        if request.voice.secondary_voice:
+            runtime.voice_nexus_id = request.voice.secondary_voice
+        runtime.tts_stability = request.voice.stability
+        runtime.tts_similarity_boost = request.voice.similarity_boost
+    
+    # Apply system settings to RuntimeSettings
+    if request.system:
+        runtime.vad_threshold = request.system.vad_threshold
+        runtime.vad_min_silence_ms = request.system.vad_min_silence_ms
+    
+    logger.info("✅ RuntimeSettings updated - changes take effect immediately")
+    
     return {
         "voice": {
-            "primary_voice": request.voice.primary_voice if request.voice else settings.elevenlabs_voice_sara,
-            "secondary_voice": request.voice.secondary_voice if request.voice else settings.elevenlabs_voice_nexus,
-            "stability": request.voice.stability if request.voice else settings.elevenlabs_stability,
-            "similarity_boost": request.voice.similarity_boost if request.voice else settings.elevenlabs_similarity_boost,
+            "primary_voice": runtime.voice_sara_id,
+            "secondary_voice": runtime.voice_nexus_id,
+            "stability": runtime.tts_stability,
+            "similarity_boost": runtime.tts_similarity_boost,
         },
         "system": {
             "max_concurrent_calls": request.system.max_concurrent_calls if request.system else settings.max_concurrent_calls,
             "response_timeout_ms": request.system.response_timeout_ms if request.system else settings.response_timeout_ms,
-            "vad_threshold": request.system.vad_threshold if request.system else settings.vad_threshold,
-            "vad_min_silence_ms": request.system.vad_min_silence_ms if request.system else settings.vad_min_silence_ms,
+            "vad_threshold": runtime.vad_threshold,
+            "vad_min_silence_ms": runtime.vad_min_silence_ms,
         },
         "environment": settings.app_env,
     }

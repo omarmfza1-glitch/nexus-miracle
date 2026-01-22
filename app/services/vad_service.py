@@ -44,13 +44,12 @@ class VADService:
         self._vad_iterator: Any = None
         self._is_initialized = False
         
-        # VAD configuration
+        # Import runtime settings for dynamic configuration
+        from app.services.runtime_settings import get_runtime_settings
+        self._runtime_settings = get_runtime_settings()
+        
+        # VAD configuration - now read dynamically from RuntimeSettings
         self._sample_rate = 16000  # Silero expects 16kHz
-        self._threshold = self._settings.vad_threshold
-        # Increased silence threshold to avoid cutting off speech too early
-        self._min_silence_ms = max(self._settings.vad_min_silence_ms, 600)  # At least 600ms of silence
-        # Minimum speech duration - must have at least 500ms of speech to be valid
-        self._min_speech_ms = 500
         
         # Tracking state
         self._is_speaking = False
@@ -63,7 +62,7 @@ class VADService:
         self._audio_buffer: list[np.ndarray] = []
         self._buffer_samples = 0
         
-        logger.info("VADService created")
+        logger.info("VADService created with dynamic settings")
     
     async def initialize(self) -> None:
         """
@@ -155,7 +154,10 @@ class VADService:
         # Use direct energy-based detection (more reliable for web audio)
         energy_rms = np.sqrt(np.mean(audio_float ** 2))
         speech_prob = min(energy_rms * 15, 1.0)  # Same multiplier as in process_audio
-        is_speech = speech_prob >= self._threshold
+        
+        # Read threshold dynamically from RuntimeSettings
+        threshold = self._runtime_settings.vad_threshold
+        is_speech = speech_prob >= threshold
         
         # Update sample counts
         chunk_samples = len(audio_float)
@@ -178,13 +180,17 @@ class VADService:
             self._silence_samples += chunk_samples
             
             if self._is_speaking:
-                # Check if silence exceeds threshold
+                # Check if silence exceeds threshold - read dynamically
                 silence_ms = (self._silence_samples / self._sample_rate) * 1000
                 speech_duration_ms = (self._speech_samples / self._sample_rate) * 1000
                 
-                if silence_ms >= self._min_silence_ms:
+                # Get thresholds from RuntimeSettings
+                min_silence_ms = self._runtime_settings.vad_min_silence_ms
+                min_speech_ms = self._runtime_settings.vad_min_speech_ms
+                
+                if silence_ms >= min_silence_ms:
                     # Check if we have enough speech before ending
-                    if speech_duration_ms >= self._min_speech_ms:
+                    if speech_duration_ms >= min_speech_ms:
                         # Speech ended with sufficient duration
                         self._is_speaking = False
                         
@@ -199,7 +205,7 @@ class VADService:
                     else:
                         # Too short, treat as noise and reset
                         logger.debug(
-                            f"Speech too short ({speech_duration_ms:.0f}ms < {self._min_speech_ms}ms), ignoring"
+                            f"Speech too short ({speech_duration_ms:.0f}ms < {min_speech_ms}ms), ignoring"
                         )
                         self._is_speaking = False
                         self._speech_samples = 0
