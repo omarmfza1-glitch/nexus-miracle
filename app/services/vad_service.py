@@ -47,8 +47,10 @@ class VADService:
         # VAD configuration
         self._sample_rate = 16000  # Silero expects 16kHz
         self._threshold = self._settings.vad_threshold
-        self._min_silence_ms = self._settings.vad_min_silence_ms
-        self._min_speech_ms = 400  # Minimum speech duration - requires sustained speech
+        # Increased silence threshold to avoid cutting off speech too early
+        self._min_silence_ms = max(self._settings.vad_min_silence_ms, 600)  # At least 600ms of silence
+        # Minimum speech duration - must have at least 500ms of speech to be valid
+        self._min_speech_ms = 500
         
         # Tracking state
         self._is_speaking = False
@@ -177,20 +179,30 @@ class VADService:
             if self._is_speaking:
                 # Check if silence exceeds threshold
                 silence_ms = (self._silence_samples / self._sample_rate) * 1000
+                speech_duration_ms = (self._speech_samples / self._sample_rate) * 1000
                 
                 if silence_ms >= self._min_silence_ms:
-                    # Speech ended
-                    self._is_speaking = False
-                    speech_duration_ms = (self._speech_samples / self._sample_rate) * 1000
-                    
-                    logger.debug(
-                        f"Speech ended: duration={speech_duration_ms:.0f}ms, "
-                        f"silence={silence_ms:.0f}ms"
-                    )
-                    
-                    # Reset speech counter
-                    self._speech_samples = 0
-                    return VADEvent.SPEECH_END
+                    # Check if we have enough speech before ending
+                    if speech_duration_ms >= self._min_speech_ms:
+                        # Speech ended with sufficient duration
+                        self._is_speaking = False
+                        
+                        logger.info(
+                            f"Speech ended: duration={speech_duration_ms:.0f}ms, "
+                            f"silence={silence_ms:.0f}ms"
+                        )
+                        
+                        # Reset speech counter
+                        self._speech_samples = 0
+                        return VADEvent.SPEECH_END
+                    else:
+                        # Too short, treat as noise and reset
+                        logger.debug(
+                            f"Speech too short ({speech_duration_ms:.0f}ms < {self._min_speech_ms}ms), ignoring"
+                        )
+                        self._is_speaking = False
+                        self._speech_samples = 0
+                        return VADEvent.SILENCE
                 else:
                     # Still in speech, just a short pause
                     return VADEvent.SPEECH_CONTINUE
