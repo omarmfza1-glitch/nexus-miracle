@@ -152,8 +152,9 @@ class VADService:
         # Convert to float32 normalized
         audio_float = audio.astype(np.float32) / 32768.0
         
-        # Get speech probability
-        speech_prob = self._get_speech_probability(audio_float)
+        # Use direct energy-based detection (more reliable for web audio)
+        energy_rms = np.sqrt(np.mean(audio_float ** 2))
+        speech_prob = min(energy_rms * 15, 1.0)  # Same multiplier as in process_audio
         is_speech = speech_prob >= self._threshold
         
         # Update sample counts
@@ -169,7 +170,7 @@ class VADService:
                 # Speech started
                 self._is_speaking = True
                 self._speech_start_sample = self._total_samples_processed
-                logger.debug(f"Speech started (prob={speech_prob:.2f})")
+                logger.info(f"🎙️ Speech started (prob={speech_prob:.2f}, energy={energy_rms:.4f})")
                 return VADEvent.SPEECH_START
             else:
                 return VADEvent.SPEECH_CONTINUE
