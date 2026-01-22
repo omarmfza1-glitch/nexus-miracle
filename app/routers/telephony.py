@@ -617,6 +617,21 @@ async def web_test_websocket(websocket: WebSocket) -> None:
                     call_service.set_assistant_speaking(session_id, False)
                     
                     logger.info(f"🔊 Response sent to web: {len(response_audio)} bytes")
+            
+            elif msg_type == "interruption":
+                # Handle interruption from browser
+                logger.info(f"🛑 [{session_id}] Interruption received from browser!")
+                
+                # Mark that assistant is no longer speaking
+                call_service.set_assistant_speaking(session_id, False)
+                
+                # Clear any accumulated audio buffer to start fresh
+                # The user's new speech will be captured in subsequent audio messages
+                
+                # Send acknowledgement
+                await websocket.send_json({
+                    "type": "listening",
+                })
                     
     except WebSocketDisconnect:
         logger.info(f"🌐 Web test session disconnected: {session_id}")
