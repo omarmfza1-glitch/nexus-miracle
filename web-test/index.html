@@ -320,7 +320,7 @@
 
         // Track current playing source for interruption
         let currentAudioSource = null;
-        const INTERRUPTION_THRESHOLD = 0.008; // Lower threshold for better detection
+        const INTERRUPTION_THRESHOLD = 0.025; // Balanced threshold - not too sensitive
 
         function startAudioCapture() {
             const source = audioContext.createMediaStreamSource(mediaStream);
