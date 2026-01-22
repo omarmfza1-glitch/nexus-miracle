@@ -204,8 +204,10 @@ class CallService:
         audio_duration_sec = len(audio) / (16000 * 2)  # 16kHz, 16-bit = 32 bytes per second... wait, 2 bytes per sample
         # Actually: 16000 samples/sec * 2 bytes/sample = 32000 bytes/sec
         audio_duration_sec = len(audio) / 32000
-        self._greeting_end_time[call_control_id] = time.time() + audio_duration_sec + 2.0
-        logger.info(f"🛡️ Greeting protection until: {audio_duration_sec + 2.0:.1f}s from now")
+        # Reduced protection time: just 0.5s after greeting finishes to avoid blocking user input
+        protection_buffer = 0.5
+        self._greeting_end_time[call_control_id] = time.time() + audio_duration_sec + protection_buffer
+        logger.info(f"🛡️ Greeting protection: audio={audio_duration_sec:.1f}s + buffer={protection_buffer}s = {audio_duration_sec + protection_buffer:.1f}s total")
         
         session.update_state(CallState.ACTIVE)
         
@@ -246,8 +248,13 @@ class CallService:
         # Check if we're in greeting protection period
         greeting_protection_active = False
         greeting_end = self._greeting_end_time.get(call_control_id, 0)
-        if time.time() < greeting_end:
+        current_time = time.time()
+        if current_time < greeting_end:
             greeting_protection_active = True
+            remaining = greeting_end - current_time
+            # Only log occasionally to avoid spam
+            if remaining > 0.5:
+                logger.debug(f"🛡️ [{call_control_id}] Greeting protection: {remaining:.1f}s remaining")
         
         # Run VAD
         vad_result = await self._vad.process_audio(audio_bytes)
@@ -256,7 +263,7 @@ class CallService:
         speech_prob = vad_result.get('speech_probability', 0)
         is_speaking = vad_result.get('is_speaking', False)
         if speech_prob > 0.3 or is_speaking:
-            logger.debug(f"🎙️ [{call_control_id}] VAD: prob={speech_prob:.2f}, speaking={is_speaking}")
+            logger.info(f"🎙️ [{call_control_id}] VAD: prob={speech_prob:.2f}, speaking={is_speaking}, protected={greeting_protection_active}")
         
         result: dict[str, Any] = {
             "vad": vad_result,
@@ -266,6 +273,7 @@ class CallService:
         }
         
         # During greeting protection, don't process speech/interruptions
+        # BUT still include VAD results for debugging
         if greeting_protection_active:
             return result
         

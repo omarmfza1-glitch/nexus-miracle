@@ -575,13 +575,32 @@ async def web_test_websocket(websocket: WebSocket) -> None:
                 # Decode audio from browser (PCM 16kHz, Int16)
                 audio_b64 = data.get("audio", "")
                 audio_bytes = base64.b64decode(audio_b64)
-                logger.debug(f"🎤 [{session_id}] Received audio: {len(audio_bytes)} bytes")
+                
+                # Calculate audio energy for debugging
+                import numpy as np
+                audio_np = np.frombuffer(audio_bytes, dtype=np.int16)
+                audio_energy = np.sqrt(np.mean(audio_np.astype(np.float32) ** 2))
+                
+                if audio_energy > 500:  # Only log if there's significant audio
+                    logger.info(f"🎤 [{session_id}] Audio chunk: {len(audio_bytes)} bytes, energy={audio_energy:.0f}")
                 
                 # Process audio chunk
                 result = await call_service.process_audio_chunk(
                     call_control_id=session_id,
                     audio_bytes=audio_bytes,
                 )
+                
+                # Log VAD result for debugging
+                vad_result = result.get("vad", {})
+                speech_prob = vad_result.get("speech_probability", 0)
+                is_speaking = vad_result.get("is_speaking", False)
+                speech_ended = vad_result.get("speech_ended", False)
+                
+                if speech_prob > 0.3 or is_speaking or speech_ended:
+                    logger.info(f"🔊 [{session_id}] VAD: prob={speech_prob:.2f}, speaking={is_speaking}, ended={speech_ended}")
+                
+                if speech_ended:
+                    logger.info(f"✅ [{session_id}] Speech ended! Processing response...")
                 
                 # Check for response audio
                 if result.get("response_audio"):
