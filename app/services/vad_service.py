@@ -261,8 +261,8 @@ class VADService:
         
         # Fallback: energy-based detection
         energy = np.sqrt(np.mean(buffered_audio ** 2))
-        # Convert RMS to pseudo-probability
-        speech_prob = min(energy * 10, 1.0)
+        # Convert RMS to pseudo-probability (increased multiplier for better web audio sensitivity)
+        speech_prob = min(energy * 15, 1.0)
         return speech_prob
     
     async def process_audio(self, audio_bytes: bytes) -> dict[str, Any]:
@@ -279,13 +279,21 @@ class VADService:
             await self.initialize()
         
         try:
-            # Get event
-            event = self.process_chunk(audio_bytes)
-            
-            # Compute metrics
+            # Calculate energy for logging
             audio = np.frombuffer(audio_bytes, dtype=np.int16)
             audio_float = audio.astype(np.float32) / 32768.0
-            speech_prob = self._get_speech_probability(audio_float)
+            energy_rms = np.sqrt(np.mean(audio_float ** 2))
+            
+            # Get event (this internally calculates speech_prob)
+            event = self.process_chunk(audio_bytes)
+            
+            # Get the last calculated speech probability from the internal state
+            # Use energy-based calculation for reporting
+            speech_prob = min(energy_rms * 15, 1.0)  # Increased multiplier for better sensitivity
+            
+            # Log every few chunks for debugging (when there's some energy)
+            if energy_rms > 0.01:
+                logger.debug(f"VAD chunk: energy_rms={energy_rms:.4f}, prob={speech_prob:.2f}, speaking={self._is_speaking}, event={event}")
             
             return {
                 "event": event,
